@@ -6,9 +6,8 @@
 import time
 from collections import deque, namedtuple
 
-# 通过 hook 上报事件的工具。dsh 需要启用其 hook 插件后才会上报；
-# 未收到过 dsh 事件时，dsh 计数仍用会话文件扫描的估算
-HOOK_TOOLS = ("claude", "codex", "dsh")
+# 通过 hook 上报事件的工具。只接 Claude Code，其他工具的事件一律丢弃
+HOOK_TOOLS = ("claude",)
 
 # 诊断用：保留最近这么多条事件（只含白名单字段）
 RECENT_EVENTS = 20
@@ -49,7 +48,8 @@ DEFAULT_RULES = {
 _STOP = "stop"
 _TO_IDLE = "to_idle"
 
-# 对外快照：各工具工作中数量、今日完成数、等你处理总数与按先后排序的等待列表
+# 对外快照：工作中数量、今日完成数、等你处理总数与按先后排序的等待列表。
+# cx、ds 为协议兼容保留（AR1 状态帧必须带），恒为 0
 Snapshot = namedtuple("Snapshot", "cc cx ds done wn waiting")
 
 # 单个工具的计数（专用页面方案 §5.1）：等你处理数、后台运行数、今日完成数。
@@ -114,14 +114,12 @@ class Aggregator:
         self._clock = clock
         self._day_of = day_of
         self._sessions = {}
-        self._dsh_working = 0
 
         merged = dict(DEFAULT_RULES)
         merged.update(rules or {})
         self._question_tools = set(merged["question_tools"])
         self._async_question_tools = set(merged["async_question_tools"])
         self._approve_tools = set(merged["approve_tools"])
-        self._dsh_hooks_seen = False   # 收到过 dsh hook 事件后，dsh 计数以事件为准
         self._recent = deque(maxlen=RECENT_EVENTS)
         self._notify_approve = set(merged["notify_approve"])
         self._notify_question = set(merged["notify_question"])
@@ -165,20 +163,13 @@ class Aggregator:
                 del self._sessions[key]
         return self.snapshot() != before
 
-    def set_dsh_working(self, count):
-        """设置 dsh 工作中的会话数（来自文件扫描）；有变化时返回 True。"""
-        count = max(0, int(count))
-        changed = count != self._dsh_working
-        self._dsh_working = count
-        return changed
-
     # ------------------------------------------------------------------
     # 输出
     # ------------------------------------------------------------------
 
     def snapshot(self):
         """生成当前快照。等待列表按进入等待的先后排序，同时刻保持插入顺序。"""
-        working = {"claude": 0, "codex": 0, "dsh": 0}
+        working = dict.fromkeys(HOOK_TOOLS, 0)
         waiting = []
         for (tool, _sid), s in self._sessions.items():
             if s.is_waiting():
@@ -188,8 +179,7 @@ class Aggregator:
                 working[tool] += 1
         waiting.sort(key=lambda item: item[0])
         items = [(tool, reason) for _, tool, reason in waiting]
-        ds = working["dsh"] if self._dsh_hooks_seen else self._dsh_working
-        return Snapshot(cc=working["claude"], cx=working["codex"], ds=ds, done=self._done,
+        return Snapshot(cc=working["claude"], cx=0, ds=0, done=self._done,
                         wn=len(items), waiting=items)
 
     def tool_counts(self):
@@ -254,8 +244,6 @@ class Aggregator:
             if isinstance(msg.get(field), str):
                 record[field] = msg[field]
         self._recent.append(record)
-        if tool == "dsh":
-            self._dsh_hooks_seen = True
 
         key = (tool, sid)
         s = self._sessions.get(key)

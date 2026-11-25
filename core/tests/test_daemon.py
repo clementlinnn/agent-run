@@ -129,7 +129,6 @@ class DaemonTest(unittest.TestCase):
         self.home = tempfile.mkdtemp(prefix="ar-")
         self.clock = FakeClock(1000.0)
         self.port = ["/dev/fake0"]
-        self.dsh_root = tempfile.mkdtemp()
         self.usage = FakeUsage()
         self.daemon = self.make_daemon()
 
@@ -139,7 +138,6 @@ class DaemonTest(unittest.TestCase):
             clock=self.clock,
             link_factory=FakeLink,
             port_finder=lambda: self.port[0],
-            dsh_root=self.dsh_root,
             day_of=lambda t: "2026-11-08",
             usage=self.usage,
         )
@@ -225,21 +223,23 @@ class DaemonTest(unittest.TestCase):
         self.assertEqual(self.link().lines, [])
 
     def test_status_file_reflects_snapshot(self):
-        self.send({"tool": "codex", "event": "PermissionRequest", "sid": "x", "ts": 1000.5})
+        self.send({"tool": "claude", "event": "UserPromptSubmit", "sid": "c1", "ts": 1000.4})
+        self.send({"tool": "claude", "event": "PermissionRequest", "sid": "x", "ts": 1000.5})
+        self.send({"tool": "codex", "event": "UserPromptSubmit", "sid": "x1", "ts": 1000.6})   # 不再采集，丢弃
         self.daemon.step()
         with open(os.path.join(self.home, "run", "status.json")) as f:
             status = json.load(f)
-        self.assertEqual(status["wn"], 1)
-        self.assertEqual(status["waiting"], [["codex", "A"]])
+        self.assertEqual((status["cc"], status["cx"], status["ds"], status["wn"]), (1, 0, 0, 1))
+        self.assertEqual(status["waiting"], [["claude", "A"]])
         self.assertTrue(status["link"])
 
     def test_status_file_lists_recent_events(self):
-        self.send({"tool": "codex", "event": "PreToolUse", "sid": "x", "ts": 1000.5,
-                   "tool_name": "request_user_input_async"})
+        self.send({"tool": "claude", "event": "PreToolUse", "sid": "x", "ts": 1000.5,
+                   "tool_name": "AskUserQuestion"})
         self.daemon.step()
         with open(os.path.join(self.home, "run", "status.json")) as f:
             status = json.load(f)
-        self.assertEqual(status["recent"][-1]["tool_name"], "request_user_input_async")
+        self.assertEqual(status["recent"][-1]["tool_name"], "AskUserQuestion")
         self.assertNotIn("sid", status["recent"][-1])
 
     def test_done_count_survives_restart(self):
@@ -251,16 +251,6 @@ class DaemonTest(unittest.TestCase):
         self.daemon.step()
         self.assertEqual(frame_fields(self.link().lines[-1])["done"], "1")
 
-    def test_dsh_scan_feeds_ds_count(self):
-        path = os.path.join(self.dsh_root, "--p--", "session-1")
-        os.makedirs(path)
-        record = os.path.join(path, "session.v4.jsonl.zstd")
-        with open(record, "wb") as f:
-            f.write(b"x")
-        os.utime(record, (self.clock.t, self.clock.t))
-        self.daemon.step()
-        self.assertEqual(frame_fields(self.link().lines[-1])["ds"], "1")
-
     def test_demo_cycles_screens_then_pauses_for_disconnect(self):
         self.daemon.step()
         self.send({"ctl": "demo"})
@@ -268,7 +258,9 @@ class DaemonTest(unittest.TestCase):
         totals = []
         for _ in range(6):
             fields = frame_fields(self.link().lines[-1])
-            totals.append((int(fields["cc"]) + int(fields["cx"]) + int(fields["ds"]), int(fields["wn"])))
+            self.assertEqual((fields["cx"], fields["ds"]), ("0", "0"))   # 演示也只用 Claude Code
+            self.assertNotIn("CX", fields["w"])
+            totals.append((int(fields["cc"]), int(fields["wn"])))
             self.clock.t += DEMO_STEP_SECONDS
             self.daemon.step()
         # 依次为：睡觉、慢走、小跑、狂奔、冲刺、等你处理
@@ -294,25 +286,25 @@ class DaemonTest(unittest.TestCase):
         self.daemon.step()
         self.assertEqual(self.link().agent_lines, [
             "AR1 A t=CC wn=0 bg=0 done=0 h=- hr=- w=- wr=-\n",
-            "AR1 A t=CX wn=0 bg=0 done=0 h=- hr=- w=- wr=-\n",
         ])
         self.assertTrue(self.usage.started)
 
     def test_agent_frames_carry_tool_counts_and_usage(self):
-        self.usage.data["codex"] = ToolUsage(NO_LIMIT, Window(5.0, self.clock.t + 6110 * 60), 990.0, None)
-        self.send({"tool": "codex", "event": "UserPromptSubmit", "sid": "x1", "ts": 1000.1})
-        self.send({"tool": "codex", "event": "Stop", "sid": "x1", "ts": 1000.2})
+        self.usage.data["claude"] = ToolUsage(NO_LIMIT, Window(5.0, self.clock.t + 6110 * 60), 990.0, None)
+        self.send({"tool": "claude", "event": "UserPromptSubmit", "sid": "c0", "ts": 1000.1})
+        self.send({"tool": "claude", "event": "Stop", "sid": "c0", "ts": 1000.2})
         self.send({"tool": "claude", "event": "UserPromptSubmit", "sid": "c1", "ts": 1000.3})
         self.send({"tool": "claude", "event": "PermissionRequest", "sid": "c1", "ts": 1000.4})
         self.daemon.step()
-        self.assertEqual(self.link().agent_lines[-1], "AR1 A t=CX wn=0 bg=0 done=1 h=x hr=- w=5 wr=6110\n")
-        self.assertEqual(self.agent_frames()["CC"]["wn"], "1")
+        self.assertEqual(self.link().agent_lines[-1], "AR1 A t=CC wn=1 bg=0 done=1 h=x hr=- w=5 wr=6110\n")
+        self.assertEqual(set(self.agent_frames()), {"CC"})
 
     def test_agent_frames_carry_plan(self):
-        self.usage.data["codex"] = ToolUsage(NO_LIMIT, Window(5.0, self.clock.t + 6110 * 60), 990.0, None, "Pro Lite")
         self.daemon.step()
-        self.assertEqual(self.link().agent_lines[-1], "AR1 A t=CX wn=0 bg=0 done=0 h=x hr=- w=5 wr=6110 p=Pro_Lite\n")
         self.assertNotIn("p", self.agent_frames()["CC"])             # 没有套餐数据时不带 p
+        self.usage.data["claude"] = ToolUsage(NO_LIMIT, Window(5.0, self.clock.t + 6110 * 60), 990.0, None, "Max 5x")
+        self.daemon.step()
+        self.assertEqual(self.link().agent_lines[-1], "AR1 A t=CC wn=0 bg=0 done=0 h=x hr=- w=5 wr=6110 p=Max_5x\n")
 
     def test_agent_frames_resent_only_when_content_changes(self):
         self.usage.data["claude"] = ToolUsage(Window(20.0, self.clock.t + 3600), None, 990.0, None)
@@ -325,17 +317,17 @@ class DaemonTest(unittest.TestCase):
         self.daemon.step()                                           # 距重置分钟数变了
         self.assertEqual(len(self.link().agent_lines), sent + 1)
         self.assertEqual(self.agent_frames()["CC"]["hr"], "59")
-        self.send({"tool": "codex", "event": "PermissionRequest", "sid": "x", "ts": 1061.5})
+        self.send({"tool": "claude", "event": "PermissionRequest", "sid": "x", "ts": 1061.5})
         self.daemon.step()
         self.assertEqual(len(self.link().agent_lines), sent + 2)
-        self.assertTrue(self.link().agent_lines[-1].startswith("AR1 A t=CX wn=1 "))
+        self.assertTrue(self.link().agent_lines[-1].startswith("AR1 A t=CC wn=1 "))
 
     def test_device_hello_resends_agent_frames(self):
         self.daemon.step()
         sent = len(self.link().agent_lines)
         self.link().incoming = ["AR1 HELLO fw=0.4.0 proto=1"]
         self.daemon.step()
-        self.assertEqual(len(self.link().agent_lines), sent + 2)
+        self.assertEqual(len(self.link().agent_lines), sent + 1)
 
     def test_stop_events_trigger_usage_refresh(self):
         self.send({"tool": "claude", "event": "UserPromptSubmit", "sid": "c1", "ts": 1000.1})
@@ -356,20 +348,19 @@ class DaemonTest(unittest.TestCase):
             "five_hour": {"used": 23.5, "resets_at": resets}, "seven_day": None,
             "usage_updated": 990.0, "usage_error": "用量接口返回 HTTP 429", "plan": "Max 5x",
         })
-        self.assertEqual(agents["codex"]["five_hour"], None)
-        self.assertIsNone(agents["codex"]["plan"])
+        self.assertEqual(set(agents), {"claude"})
 
     def test_tool_done_survives_restart(self):
-        self.send({"tool": "codex", "event": "UserPromptSubmit", "sid": "x1", "ts": 1000.5})
-        self.send({"tool": "codex", "event": "Stop", "sid": "x1", "ts": 1000.6})
+        self.send({"tool": "claude", "event": "UserPromptSubmit", "sid": "c1", "ts": 1000.5})
+        self.send({"tool": "claude", "event": "Stop", "sid": "c1", "ts": 1000.6})
         self.daemon.step()
         with open(os.path.join(self.home, "state.json")) as f:
-            self.assertEqual(json.load(f)["done_by_tool"], {"claude": 0, "codex": 1, "dsh": 0})
+            self.assertEqual(json.load(f)["done_by_tool"], {"claude": 1})
         self.daemon.close()
         self.assertTrue(self.usage.closed)
         self.daemon = self.make_daemon()
         self.daemon.step()
-        self.assertEqual(self.agent_frames()["CX"]["done"], "1")
+        self.assertEqual(self.agent_frames()["CC"]["done"], "1")
 
     def test_demo_sends_sample_agent_frames(self):
         self.daemon.step()
@@ -377,9 +368,9 @@ class DaemonTest(unittest.TestCase):
         self.daemon.step()
         frames = self.agent_frames()
         self.assertGreaterEqual(int(frames["CC"]["h"]), 80)     # 一个 ≥80% 的窗口
-        self.assertEqual(frames["CX"]["h"], "x")                 # 一个“无此限额”的窗口
-        self.assertNotEqual(frames["CX"]["w"], "-")
-        self.assertTrue(frames["CC"]["p"] and frames["CX"]["p"])  # 示例套餐
+        self.assertNotEqual(frames["CC"]["w"], "-")
+        self.assertTrue(frames["CC"]["p"])                       # 示例套餐
+        self.assertEqual(set(frames), {"CC"})
 
 
 class DaemonBleTest(unittest.TestCase):

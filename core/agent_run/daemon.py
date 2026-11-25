@@ -2,7 +2,7 @@
 
 职责：
 1. 在 $AGENT_RUN_HOME/run/ar.sock 接收 hook 事件与控制命令（Unix 数据报）；
-2. 定时执行超时回收、日切与 dsh 扫描；
+2. 定时执行超时回收与日切；
 3. 维护到设备的串口链路：握手、状态变化立刻发送、每 2 秒心跳、断开后每 3 秒重连；
 4. 按工具发送专用页面的 A 帧（计数与订阅用量），内容变化时才发送（专用页面方案 §5.2）；
 5. 写 run/status.json 供 `agent-run status` 查看，写 state.json 保存今日完成数。
@@ -16,7 +16,6 @@ import select
 import socket
 import time
 
-from .dsh import count_working
 from .protocol import encode_agent, encode_state, parse_device_line
 from .serial_link import LinkClosed, SerialLink
 from .state import Aggregator, Snapshot, ToolCounts, local_day
@@ -29,11 +28,7 @@ HEARTBEAT_SECONDS = 2.0
 HEARTBEAT_BLE_SECONDS = 5.0
 RETRY_SECONDS = 3.0
 TICK_SECONDS = 1.0
-DSH_SCAN_SECONDS = 5.0
 STATUS_REFRESH_SECONDS = 5.0
-
-# dsh 会话记录在多少秒内有写入算工作中
-DSH_WINDOW_SECONDS = 20
 
 # 演示模式：六个画面各停留 5 秒，再停发 12 秒让设备显示“未连接”
 DEMO_STEP_SECONDS = 5.0
@@ -41,20 +36,19 @@ DEMO_PAUSE_SECONDS = 12.0
 DEMO_SCREENS = [
     Snapshot(cc=0, cx=0, ds=0, done=12, wn=0, waiting=[]),                       # 睡觉
     Snapshot(cc=1, cx=0, ds=0, done=13, wn=0, waiting=[]),                       # 慢走
-    Snapshot(cc=2, cx=1, ds=0, done=16, wn=0, waiting=[]),                       # 小跑
-    Snapshot(cc=3, cx=1, ds=1, done=21, wn=0, waiting=[]),                       # 狂奔
-    Snapshot(cc=4, cx=2, ds=2, done=34, wn=0, waiting=[]),                       # 冲刺
-    Snapshot(cc=2, cx=1, ds=0, done=21, wn=2, waiting=[("claude", "A"), ("codex", "Q")]),  # 等你处理
+    Snapshot(cc=3, cx=0, ds=0, done=16, wn=0, waiting=[]),                       # 小跑
+    Snapshot(cc=5, cx=0, ds=0, done=21, wn=0, waiting=[]),                       # 狂奔
+    Snapshot(cc=8, cx=0, ds=0, done=34, wn=0, waiting=[]),                       # 冲刺
+    Snapshot(cc=1, cx=0, ds=0, done=21, wn=2, waiting=[("claude", "A"), ("claude", "Q")]),  # 等你处理
 ]
 
 # 有专用页面的工具，按设备上的页面顺序（专用页面方案 §4.1）
-AGENT_TOOLS = ("claude", "codex")
+AGENT_TOOLS = ("claude",)
 
 # 演示模式下专用页面的示例数据：(计数, 5 小时窗口, 每周窗口, 套餐)，窗口为 (已用百分比, 距重置秒数)。
-# 含一个 ≥80% 的窗口（进度条变橙色）和一个“无此限额”的窗口（专用页面方案 §5.5）
+# 含一个 ≥80% 的窗口（进度条变橙色）
 DEMO_AGENTS = {
     "claude": (ToolCounts(wn=1, bg=1, done=8), (86.0, 2 * 3600 + 15 * 60), (41.0, 3 * 86400 + 5 * 3600), "Max 5x"),
-    "codex": (ToolCounts(wn=1, bg=0, done=13), NO_LIMIT, (23.0, 6 * 86400 + 2 * 3600), "Pro Lite"),
 }
 
 # 每轮最多处理的数据报数，防止事件风暴饿死链路维护
@@ -110,14 +104,13 @@ def _read_json(path, default):
 
 class Daemon:
     def __init__(self, home=None, clock=time.time, link_factory=SerialLink, port_finder=None,
-                 dsh_root=None, day_of=local_day, rules=None, ble_factory=None, usage=None):
+                 day_of=local_day, rules=None, ble_factory=None, usage=None):
         """
         home:         运行数据目录
         clock:        时钟函数
         link_factory: 以端口路径构造 USB 链路对象的工厂（测试时注入假链路）
         port_finder:  返回设备端口路径或 None 的函数
         ble_factory:  构造蓝牙链路对象的工厂；None 表示不使用蓝牙
-        dsh_root:     dsh 会话根目录；None 表示不扫描
         day_of:       时间戳到本地日期的换算
         rules:        事件映射规则覆盖
         usage:        订阅用量采集（usage.UsageCollector）；None 表示不采集，专用页面显示暂无数据
@@ -132,7 +125,6 @@ class Daemon:
         self._ble_factory = ble_factory
         self._next_usb_check = 0.0
         self._port_finder = port_finder or (lambda: None)
-        self._dsh_root = dsh_root
         self._day_of = day_of
         self._rules = rules
         self._usage = usage if usage is not None else _NoUsage()
@@ -147,7 +139,6 @@ class Daemon:
         self._last_send_at = 0.0
         self._next_retry = 0.0
         self._next_tick = 0.0
-        self._next_dsh = 0.0
         self._last_status = None
         self._last_status_at = 0.0
         self._last_done = None
@@ -213,9 +204,6 @@ class Daemon:
         if now >= self._next_tick:
             self._agg.tick()
             self._next_tick = now + TICK_SECONDS
-        if self._dsh_root and now >= self._next_dsh:
-            self._agg.set_dsh_working(count_working(self._dsh_root, now, window=DSH_WINDOW_SECONDS))
-            self._next_dsh = now + DSH_SCAN_SECONDS
 
         self._usage.step(now)
 

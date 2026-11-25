@@ -65,11 +65,10 @@ def cmd_run(args):
     daemon = Daemon(
         home=home,
         port_finder=_port_finder(home),
-        dsh_root=os.path.expanduser(config.get("dsh_root", "~/.dsh/sessions")),
         rules=config.get("rules"),
         # 没有 USB 时经蓝牙桥接程序发送
         ble_factory=lambda: BleLink(os.path.join(run_dir, "ble.sock"), os.path.join(run_dir, "ble-status.json")),
-        # Claude Code、Codex 的订阅用量，供设备上的专用页面显示
+        # Claude Code 的订阅用量，供设备首页与专用页面显示
         usage=UsageCollector(),
     )
     daemon.start()
