@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Agent Run! aggregates locally running AI coding agent sessions (Claude Code, Codex, dsh) into a status display: a pet that runs faster the more sessions are working and waves and beeps when a session waits for you. The current display is the FoloToy AI Passport (ESP32-C3, 240×320) over USB serial or BLE. macOS only.
+Agent Run! aggregates locally running Claude Code sessions into a status display: a pet that runs faster the more sessions are working and waves and beeps when a session waits for you, with the Claude Code 5-hour and weekly usage on the home screen. Since 0.7 only Claude Code is collected; Codex and dsh support was removed, but the protocol still carries `cx=0 ds=0` so old and new firmware/collector versions interoperate (see `docs/specs/2026-11-25-agent-run-claude-only-design.md`). The current display is the FoloToy AI Passport (ESP32-C3, 240×320) over USB serial or BLE. macOS only.
 
 Three independent components talk only through the documented protocol in `docs/protocol.md`:
 
@@ -48,8 +48,8 @@ Data flow: agent hook → `core/bin/ar_hook.py` → Unix datagram `$AGENT_RUN_HO
 - **`ar_hook.py` is deliberately standalone.** It does not import `agent_run`, always exits 0 with no stdout/stderr, and forwards only whitelisted fields (session id, event name, tool name). Prompts, paths and tool args are never forwarded. Keep it fast and silent: it runs inside every agent hook.
 - **`state.py` is pure logic.** No I/O, and the clock and local-date functions are injected so timeouts and the day rollover can be tested with a fake clock. Per-session states: idle / working / waiting / background, with timeout reaping. The event→state mapping is in `docs/specs/2026-11-08-agent-run-design.md` §5.
 - **`daemon.py`** drains the socket, keeps the state, picks a link (USB preferred, falls back to BLE via `ble_link.py`, which shares `SerialLink`'s interface), sends AR1 `S` status frames (state change plus heartbeat) and `A` per-tool frames (on change or HELLO), and persists "done today". Its dependencies (clock, link factory, port finder, usage) are injected for tests.
-- **`usage.py`**: subscription usage. For Claude Code, it reads the CLI token from the keychain item `Claude Code-credentials` and calls a non-public usage endpoint. For Codex, it parses `~/.codex/sessions`.
-- **`install.py`**: appends its own entries to `~/.claude/settings.json` / `~/.codex/hooks.json` (backups go to `~/.agent-run/backup/`) and writes the launchd plists. Never modify the user's existing hooks.
+- **`usage.py`**: Claude Code subscription usage. It reads the CLI token from the keychain item `Claude Code-credentials` and calls a non-public usage endpoint.
+- **`install.py`**: appends its own entries to `~/.claude/settings.json` and removes entries a pre-0.7 install left in `~/.codex/hooks.json` (backups go to `~/.agent-run/backup/`), and writes the launchd plists. Never modify the user's existing hooks.
 - **Firmware** (`displays/ai-passport/main/`): `main.c` runs the app task loop. All display, timing, backlight, DND, menu and power-detection *rules* live in `ar_model.c` (pure C, host-testable). `ar_proto.c` parses AR1, `ar_raster.c`/`ar_sprite.c` draw the pet and the 5×7 digits, and `ar_ui.c` is the LVGL glue. To make logic testable on the host, put it in `ar_model`/`ar_proto`/etc., not in `main.c` or `ar_ui.c`. `components/bsp/` and a few root files come from FoloToy/ai-passport (MIT); update them by diffing against upstream.
 - Firmware version is `AR_FW_VERSION` in `main/agent_run/ar_link.h` (reported in `AR1 HELLO`).
 
