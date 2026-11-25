@@ -513,14 +513,11 @@ static void app_task(void *arg) {
         view.pair_cleared = now < s_cleared_until_us;
         view.ble_bonded = ble.bonded;
         memcpy(view.ble_name, ble.name, sizeof(view.ble_name));
-        // 专用页面:等你处理、未连接时换算成首页;工具下标即 ar_tool_t(CC、CX)
+        // 专用页面:等你处理、未连接时换算成首页。只接 Claude Code:首页三格与专用页面都用 CC 的 A 帧
         view.page = ar_page_shown(s_page, screen);
-        if (view.page != AR_PAGE_HOME) {
-            const int tool = view.page == AR_PAGE_CC ? AR_TOOL_CC : AR_TOOL_CX;
-            view.has_agent = link.has_agent[tool];
-            if (view.has_agent) memcpy(&view.agent, &link.agent[tool], sizeof(view.agent));
-            view.agent_flash = now < s_agent_flash_until_us[tool];
-        }
+        view.has_agent = link.has_agent[AR_TOOL_CC];
+        if (view.has_agent) memcpy(&view.agent, &link.agent[AR_TOOL_CC], sizeof(view.agent));
+        view.agent_flash = view.page == AR_PAGE_CC && now < s_agent_flash_until_us[AR_TOOL_CC];
 
         // 背光降档时动画放慢一倍
         const ar_screen_t want_anim = ble.confirming ? AR_SCREEN_WAITING : screen;

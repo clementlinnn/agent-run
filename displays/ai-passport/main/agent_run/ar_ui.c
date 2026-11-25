@@ -178,7 +178,7 @@ static lv_obj_t *s_speed_label;
 static lv_obj_t *s_bars[4];
 static lv_obj_t *s_tiles[3];
 static lv_obj_t *s_tile_canvas[3];
-static lv_obj_t *s_tile_label[3];   // 计数格的中文标签,只在专用页面显示
+static lv_obj_t *s_tile_label[3];   // 计数格的中文标签:首页为用量与后台运行,专用页面为三项计数
 static lv_obj_t *s_done_label;
 static lv_obj_t *s_wait_short_label;
 // 工具专用页面:工具名、页码点与两张用量卡片放在同一分组里整组显隐
@@ -413,18 +413,30 @@ static int draw_big_number(unsigned value, bool dim) {
     return ar_raster_text_width(text, BIG_SCALE);
 }
 
-// 计数格:上方数字,下方工具代号
-static void draw_tile(int index, unsigned value) {
+// 首页的用量格(只接 Claude Code 方案 §4):已用百分比,达到警示线用橙色;暂无数据与无此限额画暗色 --。
+// 标签由中文标签对象显示。"100%" 在 3 倍字号下比格内画布宽,改用 2 倍字号并与 3 倍字号的数字垂直居中
+static void draw_usage_tile(int index, uint8_t percent) {
     static lv_draw_buf_t *const bufs[3] = { &s_tile0_buf, &s_tile1_buf, &s_tile2_buf };
-    static const char *const names[3] = { "CC", "CODEX", "DSH" };
-    char text[4];
-    if (value > 99) value = 99;
-    snprintf(text, sizeof(text), "%u", value);
+    const bool known = percent <= 100u;
+    char text[5];
+    if (known) snprintf(text, sizeof(text), "%u%%", (unsigned)percent);
+    else snprintf(text, sizeof(text), "--");
+    const int scale = ar_raster_text_width(text, 3) <= TILE_CANVAS_W ? 3 : 2;
+    const uint32_t ink = !known ? C_DIM : ar_usage_alert(percent) ? C_ALERT : C_TEXT;
     ar_canvas_t c = canvas_of(bufs[index]);
     ar_raster_fill(&c, AR_RGB565(C_TILE));
-    text_centered(&c, 2, text, 3, AR_RGB565(value ? C_TEXT : C_DIM));
-    text_centered(&c, 28, names[index], 2, AR_RGB565(C_TEXT2));
+    text_centered(&c, scale == 3 ? 2 : 2 + 7 / 2, text, scale, AR_RGB565(ink));
     lv_obj_invalidate(s_tile_canvas[index]);
+}
+
+// 计数格的中文标签:首页与专用页面各用一组文字,颜色恢复为次要文字色
+static void set_tile_labels(const char *const names[3]) {
+    for (int i = 0; i < 3; i++) {
+        // 文字没变时不重设:lv_label_set_text 每次都会在 LVGL 内存池里重新分配
+        if (strcmp(lv_label_get_text(s_tile_label[i]), names[i]) != 0) lv_label_set_text(s_tile_label[i], names[i]);
+        lv_obj_set_style_text_color(s_tile_label[i], lv_color_hex(C_TEXT2), LV_PART_MAIN);
+        lv_obj_align(s_tile_label[i], LV_ALIGN_TOP_MID, 0, TILE_LABEL_Y);
+    }
 }
 
 // 专用页面的计数格:只画数字(上限 999),标签由中文标签对象显示;为 0 时用暗色
@@ -699,7 +711,7 @@ static void create_agent_page(void) {
     static const char *const tile_names[3] = { AR_TXT_TILE_WORKING, AR_TXT_TILE_BACKGROUND, AR_TXT_DONE_TODAY };
     s_agent = make_group(s_scr);
     s_agent_title = make_label(s_agent, C_TEXT, PAD_X, AGENT_TITLE_Y);
-    // 页码点靠右,三点依次为首页、Claude Code、Codex
+    // 页码点靠右,依次为首页、Claude Code
     for (int i = 0; i < AR_PAGE_COUNT; i++) {
         const int x = PAD_X + CONTENT_W - (AR_PAGE_COUNT - i) * (PAGE_DOT + PAGE_DOT_GAP) + PAGE_DOT_GAP;
         s_page_dots[i] = make_box(s_agent, C_TRACK, x, AGENT_TITLE_Y + 5, PAGE_DOT, PAGE_DOT, PAGE_DOT / 2);
@@ -1148,9 +1160,9 @@ static void update_plan_chip(const char *plan) {
 // 工具专用页面:工具名与套餐徽标、页码点、两张用量卡片,三格为工作中、后台运行、今日完成,底栏只有切换提示。
 // 不显示“等你处理”:有会话等你处理时调用方显示提醒画面,专用页面出现时这个数必为 0
 static void update_agent_page(const ar_view_t *v) {
-    const bool cc = v->page == AR_PAGE_CC;
+    static const char *const tile_names[3] = { AR_TXT_TILE_WORKING, AR_TXT_TILE_BACKGROUND, AR_TXT_DONE_TODAY };
     const ar_agent_t *a = &v->agent;
-    lv_label_set_text(s_agent_title, cc ? AR_TXT_TOOL_CC : AR_TXT_TOOL_CX);
+    lv_label_set_text(s_agent_title, AR_TXT_TOOL_CC);
     update_plan_chip(v->has_agent ? a->plan : "");   // 还没收到 A 帧时不显示套餐
     for (int i = 0; i < AR_PAGE_COUNT; i++) {
         lv_obj_set_style_bg_color(s_page_dots[i], lv_color_hex(i == v->page ? C_ACCENT : C_TRACK), LV_PART_MAIN);
@@ -1159,8 +1171,9 @@ static void update_agent_page(const ar_view_t *v) {
     update_card(&s_cards[0], v->has_agent ? a->h : AR_USAGE_UNKNOWN, a->hr);
     update_card(&s_cards[1], v->has_agent ? a->w : AR_USAGE_UNKNOWN, a->wr);
 
-    // 工作中沿用状态帧的 cc / cx(含后台运行);刚有会话完成时“今日完成”用强调色
-    draw_agent_tile(0, cc ? v->state.cc : v->state.cx, C_TEXT);
+    // 工作中沿用状态帧的 cc(含后台运行);刚有会话完成时“今日完成”用强调色
+    set_tile_labels(tile_names);
+    draw_agent_tile(0, v->state.cc, C_TEXT);
     draw_agent_tile(1, v->has_agent ? a->bg : 0, C_TEXT);
     draw_agent_tile(2, v->has_agent ? a->done : 0, v->agent_flash ? C_ACCENT : C_TEXT);
     lv_obj_set_style_text_color(s_tile_label[2], lv_color_hex(v->agent_flash ? C_ACCENT : C_TEXT2), LV_PART_MAIN);
@@ -1200,7 +1213,7 @@ void ar_ui_update(const ar_view_t *v) {
     for (int i = 0; i < 4; i++) show(s_bars[i], show_normal);
     for (int i = 0; i < 3; i++) {
         show(s_tiles[i], show_normal || show_agent);
-        show(s_tile_label[i], show_agent);
+        show(s_tile_label[i], show_normal || show_agent);
         lv_obj_set_y(s_tiles[i], agent_page ? TILE_Y_AGENT : TILE_Y);
     }
     show(s_agent, show_agent);
@@ -1248,9 +1261,12 @@ void ar_ui_update(const ar_view_t *v) {
         for (int i = 0; i < 4; i++) {
             lv_obj_set_style_bg_color(s_bars[i], lv_color_hex(i < bars ? C_ACCENT : C_TRACK), LV_PART_MAIN);
         }
-        draw_tile(0, s->cc);
-        draw_tile(1, s->cx);
-        draw_tile(2, s->ds);
+        // 三格为 Claude Code 的 5 小时用量、每周用量、后台运行;还没收到 A 帧时按暂无数据与 0 显示
+        static const char *const tile_names[3] = { AR_TXT_TILE_FIVE_HOUR, AR_TXT_TILE_WEEK, AR_TXT_TILE_BACKGROUND };
+        set_tile_labels(tile_names);
+        draw_usage_tile(0, v->has_agent ? v->agent.h : AR_USAGE_UNKNOWN);
+        draw_usage_tile(1, v->has_agent ? v->agent.w : AR_USAGE_UNKNOWN);
+        draw_agent_tile(2, v->has_agent ? v->agent.bg : 0, C_TEXT);
 
         lv_label_set_text_fmt(s_done_label, "%s %u", AR_TXT_DONE_TODAY, (unsigned)s->done);
         lv_label_set_text_fmt(s_wait_short_label, "%s %u", AR_TXT_WAITING_SHORT, (unsigned)s->wn);

@@ -78,6 +78,9 @@
 #define AR_TXT_RESET_UNKNOWN "重置时间未知"
 #define AR_TXT_TILE_WORKING "工作中"
 #define AR_TXT_TILE_BACKGROUND "后台运行"
+// 首页计数格(只接 Claude Code 方案 §4):5 小时用量、每周用量、后台运行
+#define AR_TXT_TILE_FIVE_HOUR "5 小时"
+#define AR_TXT_TILE_WEEK "每周"
 #define AR_TXT_PAGE_HINT "上下键切换"
 
 // 工具名(等待列表)
