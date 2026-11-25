@@ -73,6 +73,18 @@ class StatusTest(unittest.TestCase):
         self.assertIn("已不再支持 dsh", text)
         self.assertIn(dsh, text)
 
+    def test_install_hooks_warns_when_codex_hooks_need_retrust(self):
+        os.makedirs(os.path.join(self.user, ".codex"))
+        hook = os.path.join(self.home, "bin", "ar_hook.py")
+        with open(os.path.join(self.user, ".codex", "hooks.json"), "w") as f:
+            json.dump({"hooks": {"Stop": [{"hooks": [{"command": "/usr/bin/python3 %s codex" % hook}]},
+                                          {"hooks": [{"command": "/usr/local/bin/mine"}]}]}}, f)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cli.main(["--home", self.home, "install-hooks"]), 0)
+        self.assertIn("重新信任", out.getvalue())
+        self.assertIn("Stop", out.getvalue())
+
     def test_install_dsh_hooks_command_is_gone(self):
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):

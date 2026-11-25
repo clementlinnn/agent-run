@@ -238,19 +238,30 @@ def _agent_config_paths():
     return os.path.expanduser("~/.claude/settings.json"), os.path.expanduser("~/.codex/hooks.json")
 
 
+def _warn_codex_retrust(events):
+    """旧条目删掉后，排在它后面的 Codex hook 位置变了，Codex 会静默跳过，需要使用者重新信任。"""
+    if events:
+        print("注意：Codex 的 %s 事件下，你自己的 hook 排在 agent-run 旧条目之后，删掉旧条目后位置变了，"
+              "Codex 会跳过它们。请在 Codex CLI 的 /hooks 或桌面端 Settings → Hooks 里重新信任。" % "、".join(events))
+
+
 def cmd_install_hooks(args):
     hook_path, _ = install.deploy(HOST_DIR, args.home)
     claude, codex = _agent_config_paths()
+    shifted = install.codex_events_shifted_by_removal(codex, hook_path)
     backup = install.install_hooks(claude, codex, SYSTEM_PYTHON, hook_path, os.path.join(args.home, "backup"))
     print("已为 Claude Code 安装 hook，原配置备份在 %s。" % backup)
+    _warn_codex_retrust(shifted)
     return 0
 
 
 def cmd_uninstall_hooks(args):
     hook_path = os.path.join(args.home, "bin", "ar_hook.py")
     claude, codex = _agent_config_paths()
+    shifted = install.codex_events_shifted_by_removal(codex, hook_path)
     backup = install.uninstall_hooks(claude, codex, hook_path, os.path.join(args.home, "backup"))
     print("已删除 agent-run 的 hook，修改前的配置备份在 %s。" % backup)
+    _warn_codex_retrust(shifted)
     return 0
 
 

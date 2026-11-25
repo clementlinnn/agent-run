@@ -121,6 +121,32 @@ def has_our_hooks(path, hook_path):
     return any(isinstance(groups, list) and _has_our_hook(groups, hook_path) for groups in hooks.values())
 
 
+def codex_events_shifted_by_removal(path, hook_path):
+    """删掉本 hook 的条目后，哪些事件下使用者自己的 Codex hook 会改变位置。
+
+    Codex 的信任记录按 "<hooks.json>:<事件>:<分组下标>:<条目下标>" 记位置；旧版把条目追加在末尾，
+    使用者之后又加的 hook 排在它后面，删掉旧条目会让这些 hook 前移、信任失效，需要重新信任。
+    文件不存在或内容损坏时返回空列表。
+    """
+    try:
+        data = _load(path)
+    except (OSError, ValueError):
+        return []
+    hooks = data.get("hooks") if isinstance(data, dict) else None
+    if not isinstance(hooks, dict):
+        return []
+    shifted = []
+    for event, groups in hooks.items():
+        # 按 Codex 记录位置的顺序摊平成一列：是否为本 hook 的条目
+        flags = [isinstance(hook, dict) and hook_path in str(hook.get("command", ""))
+                 for group in (groups if isinstance(groups, list) else [])
+                 if isinstance(group, dict) and isinstance(group.get("hooks"), list)
+                 for hook in group["hooks"]]
+        if True in flags and not all(flags[flags.index(True):]):
+            shifted.append(event)
+    return shifted
+
+
 def install_hooks(claude_path, codex_path, python, hook_path, backup_dir):
     """为 Claude Code 安装 hook，并清掉旧版装进 Codex 的条目；返回备份目录。重复执行不会重复添加。"""
     backup = _backup([claude_path, codex_path], backup_dir)

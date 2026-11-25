@@ -7,6 +7,7 @@ import unittest
 
 from agent_run.install import (
     CLAUDE_EVENTS,
+    codex_events_shifted_by_removal,
     has_our_hooks,
     install_hooks,
     launchd_plist,
@@ -93,6 +94,31 @@ class InstallHooksTest(unittest.TestCase):
         # 没执行过新版 install-hooks 的旧安装，uninstall-hooks 也能把 Codex 里的条目清干净
         uninstall_hooks(self.claude, self.codex, HOOK, self.backup)
         self.assertEqual(read_json(self.codex), {"hooks": {"Stop": [{"hooks": [self.other]}]}})
+
+
+class CodexTrustShiftTest(unittest.TestCase):
+    """Codex 按 <事件>:<分组下标>:<条目下标> 记录信任：删掉排在前面的旧条目，后面使用者自己的 hook 下标会变。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "hooks.json")
+        self.ours = {"command": "/usr/bin/python3 %s codex" % HOOK}
+        self.mine = {"command": "/usr/local/bin/mine"}
+
+    def test_user_hooks_after_ours_are_reported(self):
+        write_json(self.path, {"hooks": {
+            "Stop": [{"hooks": [self.ours]}, {"hooks": [self.mine]}],          # 后面一组会前移
+            "SessionStart": [{"hooks": [self.ours, self.mine]}],              # 同组内后一条会前移
+            "PreToolUse": [{"hooks": [self.mine]}, {"hooks": [self.ours]}],   # 我们排在最后，不影响
+            "PostToolUse": [{"hooks": [self.ours]}],
+        }})
+        self.assertEqual(sorted(codex_events_shifted_by_removal(self.path, HOOK)), ["SessionStart", "Stop"])
+
+    def test_missing_or_broken_files_report_nothing(self):
+        self.assertEqual(codex_events_shifted_by_removal(os.path.join(self.dir, "none.json"), HOOK), [])
+        with open(self.path, "w") as f:
+            f.write("{not json")
+        self.assertEqual(codex_events_shifted_by_removal(self.path, HOOK), [])
 
 
 class HasOurHooksTest(unittest.TestCase):
