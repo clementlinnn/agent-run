@@ -36,6 +36,17 @@ public struct LineAssembler {
 }
 
 /// 解析设备的 HELLO 行,返回固件版本;不是 HELLO 时返回 nil
+/// AgentRun 设备的广播名前缀,设备名形如 AgentRun-4F32(蓝牙 MAC 地址末两字节)
+public let deviceNamePrefix = "AgentRun-"
+
+/// 扫描到的外设若是 AgentRun 设备,返回它的名称;否则返回 nil。
+/// 以广播包里的名称为准:macOS 会记住外设以前的 GAP 名称,换过固件的设备
+/// (例如从出厂固件刷成 Agent Run)的 CBPeripheral.name 仍是旧名。广播里没有名称时才用记住的名称。
+public func agentRunDeviceName(cached: String?, advertised: String?) -> String? {
+    guard let name = advertised ?? cached, name.hasPrefix(deviceNamePrefix) else { return nil }
+    return name
+}
+
 public func parseHelloFirmware(_ line: String) -> String? {
     let parts = line.split(separator: " ")
     guard parts.count >= 2, parts[0] == "AR1", parts[1] == "HELLO" else { return nil }
