@@ -19,6 +19,16 @@ final class LineAssemblerTests: XCTestCase {
 }
 
 final class ProtocolTests: XCTestCase {
+    // macOS 会记住外设以前的 GAP 名称(例如出厂固件用过的名字),换固件后 CBPeripheral.name 仍是旧名;
+    // 识别 AgentRun 设备要以广播包里的名称为准
+    func testDeviceNamePrefersAdvertisedName() {
+        XCTAssertEqual(agentRunDeviceName(cached: "4c11ae2f4f30", advertised: "AgentRun-4F32"), "AgentRun-4F32")
+        XCTAssertEqual(agentRunDeviceName(cached: "AgentRun-4F32", advertised: nil), "AgentRun-4F32")
+        XCTAssertNil(agentRunDeviceName(cached: "AgentRun-4F32", advertised: "FoloPassport"))
+        XCTAssertNil(agentRunDeviceName(cached: nil, advertised: nil))
+        XCTAssertNil(agentRunDeviceName(cached: "4c11ae2f4f30", advertised: "nimble"))
+    }
+
     func testParseHello() {
         XCTAssertEqual(parseHelloFirmware("AR1 HELLO fw=0.2.0 proto=1"), "0.2.0")
         XCTAssertNil(parseHelloFirmware("AR1 S seq=1"))

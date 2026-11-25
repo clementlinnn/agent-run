@@ -18,6 +18,8 @@ let runDir = home + "/run"
 let socketPath = runDir + "/ble.sock"
 let statusPath = runDir + "/ble-status.json"
 let knownPeripheralKey = "knownPeripheral"
+// 记住的设备的广播名:macOS 记住的 GAP 名可能是换固件前的旧名,显示与提示都用广播名
+let knownNameKey = "knownPeripheralName"
 
 /// 日志写到 stderr,由 launchd 重定向到 log/bridge.log
 func log(_ message: String) {
@@ -28,6 +30,9 @@ func log(_ message: String) {
 final class Bridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
+    private var deviceName = UserDefaults.standard.string(forKey: knownNameKey) ?? ""
+    /// 设备名:优先用扫描时记下的广播名,没有时退回 macOS 记住的名称
+    private var displayName: String { deviceName.isEmpty ? (peripheral?.name ?? "") : deviceName }
     private var rx: CBCharacteristic?
     private var assembler = LineAssembler()
     private var ready = false              // 设备已回 HELLO
@@ -104,7 +109,7 @@ final class Bridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     // MARK: - 状态文件
 
     private func writeStatus() {
-        let status = BridgeStatus(connected: ready, name: peripheral?.name ?? "", fw: firmware,
+        let status = BridgeStatus(connected: ready, name: displayName, fw: firmware,
                                   updated: Date().timeIntervalSince1970, hint: hint)
         guard let data = try? status.jsonData() else { return }
         let tmp = statusPath + ".tmp"
@@ -139,7 +144,7 @@ final class Bridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
            let known = central.retrievePeripherals(withIdentifiers: [id]).first {
             adopt(known)
             central.connect(known, options: nil)
-            log("连接已记住的设备 \(known.name ?? idString)")
+            log("连接已记住的设备 \(displayName.isEmpty ? idString : displayName)")
         } else {
             central.scanForPeripherals(withServices: [serviceUUID], options: nil)
             log("扫描 AgentRun 设备")
@@ -153,8 +158,10 @@ final class Bridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ c: CBCentralManager, didDiscover p: CBPeripheral,
                         advertisementData ad: [String: Any], rssi: NSNumber) {
-        let name = p.name ?? (ad[CBAdvertisementDataLocalNameKey] as? String) ?? ""
-        guard name.hasPrefix("AgentRun-") else { return }
+        guard let name = agentRunDeviceName(cached: p.name,
+                                            advertised: ad[CBAdvertisementDataLocalNameKey] as? String) else { return }
+        deviceName = name
+        UserDefaults.standard.set(name, forKey: knownNameKey)
         c.stopScan()
         adopt(p)
         UserDefaults.standard.set(p.identifier.uuidString, forKey: knownPeripheralKey)
@@ -165,13 +172,13 @@ final class Bridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) {
         lastConnectAt = Date()
         assembler = LineAssembler()
-        log("已连接 \(p.name ?? "")")
+        log("已连接 \(displayName)")
         p.discoverServices([serviceUUID])
     }
 
     func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) {
         log("连接失败:\(error?.localizedDescription ?? "未知")")
-        if let code = (error as NSError?)?.code, let text = hintForConnectError(code: code, deviceName: p.name ?? "") {
+        if let code = (error as NSError?)?.code, let text = hintForConnectError(code: code, deviceName: displayName) {
             if hint != text { log(text) }
             hint = text
             writeStatus()
