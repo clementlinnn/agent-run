@@ -1171,7 +1171,7 @@ static void update_agent_page(const ar_view_t *v) {
     update_card(&s_cards[0], v->has_agent ? a->h : AR_USAGE_UNKNOWN, a->hr);
     update_card(&s_cards[1], v->has_agent ? a->w : AR_USAGE_UNKNOWN, a->wr);
 
-    // 工作中沿用状态帧的 cc(含后台运行);刚有会话完成时“今日完成”用强调色
+    // 工作中沿用状态帧的 cc(不含后台运行,后台运行在第二格);刚有会话完成时“今日完成”用强调色
     set_tile_labels(tile_names);
     draw_agent_tile(0, v->state.cc, C_TEXT);
     draw_agent_tile(1, v->has_agent ? a->bg : 0, C_TEXT);

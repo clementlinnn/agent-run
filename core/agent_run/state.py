@@ -17,7 +17,8 @@ IDLE = "idle"
 WORKING = "working"
 WAITING = "waiting"
 # 后台运行：一轮已结束，但仍有后台任务在跑，任务结束后会话会被唤醒继续。
-# 计入工作中，不计完成；超时比工作中长，因为后台任务期间没有任何 hook 事件
+# 不计入工作中（后台任务可能只是长期挂着的监看），单独计数显示在首页第三格；不计完成；
+# 超时比工作中长，因为后台任务期间没有任何 hook 事件（只接 Claude Code 方案 §12）
 BACKGROUND = "background"
 
 # 等你处理的原因代号：A = 等待授权，Q = 等你回答
@@ -175,7 +176,7 @@ class Aggregator:
             if s.is_waiting():
                 since, reason = s.waiting_item()
                 waiting.append((since, tool, reason))
-            elif s.state in (WORKING, BACKGROUND):
+            elif s.state == WORKING:
                 working[tool] += 1
         waiting.sort(key=lambda item: item[0])
         items = [(tool, reason) for _, tool, reason in waiting]
@@ -186,7 +187,7 @@ class Aggregator:
         """按工具给出等你处理、后台运行、今日完成三项计数，供专用页面使用。
 
         统计口径与 snapshot() 一致：挂起的异步提问算等你处理；后台运行的会话
-        同时计入 snapshot() 的工作中，这里单独给出其数量。
+        不计入 snapshot() 的工作中，只在这里给出数量。
         """
         wn = dict.fromkeys(HOOK_TOOLS, 0)
         bg = dict.fromkeys(HOOK_TOOLS, 0)
