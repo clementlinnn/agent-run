@@ -19,15 +19,17 @@ static ar_state_t state(uint8_t cc, uint8_t cx, uint8_t ds, uint8_t wn) {
 }
 
 static void test_speed_levels(void) {
-    // 档位边界:0 睡觉、1 慢走、2-3 小跑、4-6 狂奔、>=7 冲刺(三个工具合计)
+    // 档位边界:0 睡觉、1 慢走、2-3 小跑、4-6 狂奔、>=7 冲刺。
+    // 只接 Claude Code:只看 cc,旧采集端送来的 cx、ds 不计入
     const struct { uint8_t cc, cx, ds; ar_screen_t want; } cases[] = {
         {0, 0, 0, AR_SCREEN_SLEEP},
-        {1, 0, 0, AR_SCREEN_WALK},
-        {1, 1, 0, AR_SCREEN_TROT},
-        {1, 1, 1, AR_SCREEN_TROT},
-        {2, 1, 1, AR_SCREEN_RUN},
-        {3, 2, 1, AR_SCREEN_RUN},
-        {3, 2, 2, AR_SCREEN_DASH},
+        {0, 5, 5, AR_SCREEN_SLEEP},
+        {1, 9, 9, AR_SCREEN_WALK},
+        {2, 0, 0, AR_SCREEN_TROT},
+        {3, 0, 0, AR_SCREEN_TROT},
+        {4, 0, 0, AR_SCREEN_RUN},
+        {6, 0, 0, AR_SCREEN_RUN},
+        {7, 0, 0, AR_SCREEN_DASH},
         {99, 99, 99, AR_SCREEN_DASH},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -35,7 +37,7 @@ static void test_speed_levels(void) {
         assert(ar_model_screen(&st, true) == cases[i].want);
     }
     ar_state_t st = state(99, 99, 99, 0);
-    assert(ar_model_working_total(&st) == 297);
+    assert(ar_model_working_total(&st) == 99);
 }
 
 static void test_waiting_overrides_speed(void) {
@@ -824,24 +826,24 @@ static void test_no_deep_sleep_when_powered_or_pairing(void) {
     assert(!ar_model_should_deep_sleep(&in));
 }
 
-// 工具专用页面:首页 → Claude Code → Codex → 首页,下键前进、上键后退(专用页面方案 §4.1)
+// 工具专用页面:只剩首页与 Claude Code 两页,上下键在两者间切换(只接 Claude Code 方案 §5)
 static void test_page_cycle(void) {
+    assert(AR_PAGE_COUNT == 2);
     assert(ar_page_step(AR_PAGE_HOME, +1) == AR_PAGE_CC);
-    assert(ar_page_step(AR_PAGE_CC, +1) == AR_PAGE_CX);
-    assert(ar_page_step(AR_PAGE_CX, +1) == AR_PAGE_HOME);
-    assert(ar_page_step(AR_PAGE_HOME, -1) == AR_PAGE_CX);
-    assert(ar_page_step(AR_PAGE_CX, -1) == AR_PAGE_CC);
+    assert(ar_page_step(AR_PAGE_CC, +1) == AR_PAGE_HOME);
+    assert(ar_page_step(AR_PAGE_HOME, -1) == AR_PAGE_CC);
     assert(ar_page_step(AR_PAGE_CC, -1) == AR_PAGE_HOME);
-    assert(ar_page_step(AR_PAGE_CC, +2) == AR_PAGE_HOME);   // 下键双击按两步
-    assert(ar_page_step(AR_PAGE_CC, -2) == AR_PAGE_CX);
+    assert(ar_page_step(AR_PAGE_CC, +2) == AR_PAGE_CC);     // 下键双击按两步
+    assert(ar_page_step(AR_PAGE_HOME, -2) == AR_PAGE_HOME);
     assert(ar_page_step(200, +1) == AR_PAGE_CC);            // 状态损坏时从首页算起
 }
 
 // 画面优先级:等你处理、未连接覆盖专用页面,清空后回到原页面;这些时候上下键不切页
 static void test_page_priority_and_keys(void) {
-    assert(ar_page_shown(AR_PAGE_CX, AR_SCREEN_WAITING) == AR_PAGE_HOME);
-    assert(ar_page_shown(AR_PAGE_CX, AR_SCREEN_DISCONNECTED) == AR_PAGE_HOME);
-    assert(ar_page_shown(AR_PAGE_CX, AR_SCREEN_RUN) == AR_PAGE_CX);
+    assert(ar_page_shown(AR_PAGE_CC, AR_SCREEN_WAITING) == AR_PAGE_HOME);
+    assert(ar_page_shown(AR_PAGE_CC, AR_SCREEN_DISCONNECTED) == AR_PAGE_HOME);
+    assert(ar_page_shown(AR_PAGE_CC, AR_SCREEN_RUN) == AR_PAGE_CC);
+    assert(ar_page_shown(2, AR_SCREEN_RUN) == AR_PAGE_HOME);   // 旧固件的 Codex 页下标已无效
     assert(ar_page_shown(AR_PAGE_CC, AR_SCREEN_SLEEP) == AR_PAGE_CC);
     assert(ar_page_shown(AR_PAGE_HOME, AR_SCREEN_WALK) == AR_PAGE_HOME);
     assert(ar_page_shown(9, AR_SCREEN_WALK) == AR_PAGE_HOME);
