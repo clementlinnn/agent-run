@@ -5,11 +5,10 @@
   status            打印守护进程汇总的当前状态
   demo              让设备依次演示七种画面
   setup             查找 AI Passport 的串口，握手确认后写入 config.json
-  install-hooks     部署脚本并为 Claude Code、Codex 安装 hook（先备份）
+  install-hooks     部署脚本并为 Claude Code 安装 hook，清掉旧版装进 Codex 的条目（先备份）
   uninstall-hooks   删除本工具安装的 hook
   install-service   部署脚本并注册 launchd，登录后自动运行
   uninstall-service 注销 launchd（保留运行数据）
-  install-dsh-hooks 生成 dsh hook 插件用的配置，并打印挂载方法
   install-bridge-service / uninstall-bridge-service  注册或注销蓝牙桥接程序
   screenshot        经 USB 截取设备屏幕（需先停止守护进程）
 """
@@ -65,11 +64,10 @@ def cmd_run(args):
     daemon = Daemon(
         home=home,
         port_finder=_port_finder(home),
-        dsh_root=os.path.expanduser(config.get("dsh_root", "~/.dsh/sessions")),
         rules=config.get("rules"),
         # 没有 USB 时经蓝牙桥接程序发送
         ble_factory=lambda: BleLink(os.path.join(run_dir, "ble.sock"), os.path.join(run_dir, "ble-status.json")),
-        # Claude Code、Codex 的订阅用量，供设备上的专用页面显示
+        # Claude Code 的订阅用量，供设备首页与专用页面显示
         usage=UsageCollector(),
     )
     daemon.start()
@@ -119,10 +117,10 @@ def cmd_status(args):
     via = {"usb": "USB", "ble": "蓝牙"}.get(status.get("link_type"), "")
     link = "已连接 %s（%s）" % (status.get("port"), via) if status.get("link") else "未连接"
     print("设备链路：%s%s" % (link, "（演示中）" if status.get("demo") else ""))
-    print("工作中：Claude Code %d · Codex %d · dsh %d" % (status["cc"], status["cx"], status["ds"]))
+    print("工作中：Claude Code %d" % status["cc"])
     print("今日完成：%d" % status["done"])
     reasons = {"A": "等待授权", "Q": "等你回答"}
-    names = {"claude": "Claude Code", "codex": "Codex", "dsh": "dsh"}
+    names = {"claude": "Claude Code"}
     print("等你处理：%d" % status["wn"])
     for tool, reason in status.get("waiting", []):
         print("  - %s：%s" % (names.get(tool, tool), reasons.get(reason, reason)))
@@ -141,15 +139,13 @@ def cmd_status(args):
         if agent.get("usage_error"):
             print("  用量未更新：%s" % agent["usage_error"])
 
-    # Codex 会静默跳过未信任的 hook，这里主动提示，避免“跑了任务却不计数”
-    untrusted = install.codex_untrusted_events(
-        os.path.expanduser("~/.codex/hooks.json"),
-        os.path.expanduser("~/.codex/config.toml"),
-        os.path.join(args.home, "bin", "ar_hook.py"),
-    )
-    if untrusted:
-        print("注意：Codex 有 %d 个 agent-run hook 尚未信任（%s），Codex 会话不会计入。" % (len(untrusted), "、".join(untrusted)))
-        print("      请在 Codex 桌面端 Settings → Hooks，或 CLI 的 /hooks 中审查并信任。")
+    # 只接 Claude Code：提示旧版留下的 Codex hook 与 dsh 插件配置（只接 Claude Code 方案 §6）
+    _, codex = _agent_config_paths()
+    if install.has_our_hooks(codex, os.path.join(args.home, "bin", "ar_hook.py")):
+        print("注意：~/.codex/hooks.json 里还有 agent-run 的旧 hook，执行 agent-run install-hooks 或 uninstall-hooks 可以清掉。")
+    dsh_config = os.path.join(args.home, "dsh-hooks.json")
+    if os.path.exists(dsh_config):
+        print("注意：已不再支持 dsh。请从 dsh profile 的 cordis.patch.yml 里拿掉 dsh-hooks-claude-code 插件，再删除 %s。" % dsh_config)
 
     # 蓝牙桥接程序报告需要用户处理的问题（如重新烧录后配对失效）
     try:
@@ -166,21 +162,6 @@ def cmd_status(args):
         for item in status.get("recent", []):
             detail = item.get("tool_name") or item.get("ntype") or ""
             print("  %5.0f 秒前  %-6s %-18s %s" % (now - item["ts"], item["tool"], item["event"], detail))
-    return 0
-
-
-def cmd_install_dsh_hooks(args):
-    """写出 dsh hook 插件用的配置文件，并打印需要加到 dsh profile 里的配置。"""
-    hook_path, _ = install.deploy(HOST_DIR, args.home)
-    path = os.path.join(args.home, "dsh-hooks.json")
-    with open(path, "w") as f:
-        json.dump(install.dsh_hooks_config(SYSTEM_PYTHON, hook_path), f, indent=2)
-        f.write("\n")
-    print("已写出 %s。" % path)
-    print("在要统计的 dsh profile 的 cordis.patch.yml 中挂载插件：")
-    print("  - name: '@deepseek-ai/dsh-hooks-claude-code'")
-    print("    config:")
-    print("      configPath: %s" % path)
     return 0
 
 
@@ -257,20 +238,30 @@ def _agent_config_paths():
     return os.path.expanduser("~/.claude/settings.json"), os.path.expanduser("~/.codex/hooks.json")
 
 
+def _warn_codex_retrust(events):
+    """旧条目删掉后，排在它后面的 Codex hook 位置变了，Codex 会静默跳过，需要使用者重新信任。"""
+    if events:
+        print("注意：Codex 的 %s 事件下，你自己的 hook 排在 agent-run 旧条目之后，删掉旧条目后位置变了，"
+              "Codex 会跳过它们。请在 Codex CLI 的 /hooks 或桌面端 Settings → Hooks 里重新信任。" % "、".join(events))
+
+
 def cmd_install_hooks(args):
     hook_path, _ = install.deploy(HOST_DIR, args.home)
     claude, codex = _agent_config_paths()
+    shifted = install.codex_events_shifted_by_removal(codex, hook_path)
     backup = install.install_hooks(claude, codex, SYSTEM_PYTHON, hook_path, os.path.join(args.home, "backup"))
-    print("已为 Claude Code 和 Codex 安装 hook，原配置备份在 %s。" % backup)
-    print("Codex 需要在 CLI 的 /hooks 或桌面端 Settings → Hooks 里审查并信任新 hook 后才会执行。")
+    print("已为 Claude Code 安装 hook，原配置备份在 %s。" % backup)
+    _warn_codex_retrust(shifted)
     return 0
 
 
 def cmd_uninstall_hooks(args):
     hook_path = os.path.join(args.home, "bin", "ar_hook.py")
     claude, codex = _agent_config_paths()
+    shifted = install.codex_events_shifted_by_removal(codex, hook_path)
     backup = install.uninstall_hooks(claude, codex, hook_path, os.path.join(args.home, "backup"))
     print("已删除 agent-run 的 hook，修改前的配置备份在 %s。" % backup)
+    _warn_codex_retrust(shifted)
     return 0
 
 
@@ -318,7 +309,6 @@ def main(argv=None):
     for name, func in [
         ("run", cmd_run),
         ("demo", cmd_demo),
-        ("install-dsh-hooks", cmd_install_dsh_hooks),
         ("setup", cmd_setup),
         ("install-hooks", cmd_install_hooks),
         ("uninstall-hooks", cmd_uninstall_hooks),

@@ -32,9 +32,9 @@ typedef struct {
     bool ble_bonded;       // 已有确认过的蓝牙主机
     char ble_name[16];     // 蓝牙广播名
     uint8_t page;          // ar_page_t:要显示的页面,已按 ar_page_shown() 换算过画面优先级
-    bool has_agent;        // page 为专用页面时:是否收到过该工具的 A 帧
-    bool agent_flash;      // page 为专用页面时:该工具刚有会话完成,“今日完成”格用强调色
-    ar_agent_t agent;      // page 为专用页面且 has_agent 时有效
+    bool has_agent;        // 是否收到过 Claude Code 的 A 帧(首页与专用页面都用)
+    bool agent_flash;      // page 为专用页面时:Claude Code 刚有会话完成,“今日完成”格用强调色
+    ar_agent_t agent;      // has_agent 时有效:Claude Code 的 A 帧
 } ar_view_t;
 
 // 创建界面并加载为当前 screen

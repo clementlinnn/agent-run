@@ -87,7 +87,7 @@ typedef enum {
     AR_SCREEN_DASH,               // >= 7
 } ar_screen_t;
 
-// 三个工具“工作中”的合计
+// “工作中”的会话数:只算 Claude Code(cc)
 unsigned ar_model_working_total(const ar_state_t *s);
 
 // 链路是否在线:USB 或蓝牙任一来源在各自的超时内收到过合法帧。
@@ -103,11 +103,10 @@ uint16_t ar_model_frame_interval_ms(ar_screen_t screen);
 // 速度条点亮的格数(0-4)
 uint8_t ar_model_speed_bars(ar_screen_t screen);
 
-// 工具专用页面(专用页面方案 §4.1)。页面顺序:首页 → Claude Code → Codex → 首页
+// 工具专用页面(专用页面方案 §4.1)。只接 Claude Code:首页与 Claude Code 页两页互相切换
 typedef enum {
-    AR_PAGE_HOME = 0,   // 首页:宠物与计数
+    AR_PAGE_HOME = 0,   // 首页:宠物、跑速与 Claude Code 的用量
     AR_PAGE_CC,         // Claude Code 专用页面
-    AR_PAGE_CX,         // Codex 专用页面
     AR_PAGE_COUNT,
 } ar_page_t;
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Agent Run! 的 hook 入口（设计方案 §5.2）。
 
-由 Claude Code / Codex 以 `python3 ar_hook.py <claude|codex>` 调用：
+由 Claude Code 以 `python3 ar_hook.py claude` 调用：
 从 stdin 读取 hook JSON，只保留白名单字段，作为一个 Unix 数据报发给 agent-run 守护进程。
 
 契约：
@@ -17,8 +17,8 @@ import socket
 import sys
 import time
 
-# 认可的工具名，对应命令行第一个参数（dsh 通过其 Claude Code 兼容 hook 插件调用）
-TOOLS = ("claude", "codex", "dsh")
+# 认可的工具名，对应命令行第一个参数。只接 Claude Code：旧版装进 Codex、dsh 的 hook 若仍被调用，静默丢弃
+TOOLS = ("claude",)
 
 # 字段长度上限：异常长的值直接整条丢弃
 MAX_FIELD = 200

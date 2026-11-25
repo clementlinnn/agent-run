@@ -24,19 +24,26 @@ sys.path.insert(0, os.path.join(ROOT, "core"))
 
 from agent_run import screenshot  # noqa: E402
 from agent_run.ports import find_espressif_ports  # noqa: E402
-from agent_run.protocol import encode_state  # noqa: E402
+from agent_run.protocol import encode_agent, encode_state  # noqa: E402
 from agent_run.serial_link import SerialLink  # noqa: E402
-from agent_run.state import Snapshot  # noqa: E402
+from agent_run.state import Snapshot, ToolCounts  # noqa: E402
+from agent_run.usage import Window  # noqa: E402
 
-# (文件名, 快照)：与设计稿一致的六种在线画面
+# (文件名, 快照)：与设计稿一致的六种在线画面。只接 Claude Code：跑速只按 cc，cx、ds 恒为 0
 SCREENS = [
     ("sleep", Snapshot(cc=0, cx=0, ds=0, done=12, wn=0, waiting=[])),
     ("walk", Snapshot(cc=1, cx=0, ds=0, done=13, wn=0, waiting=[])),
-    ("trot", Snapshot(cc=2, cx=1, ds=0, done=16, wn=0, waiting=[])),
-    ("run", Snapshot(cc=3, cx=1, ds=1, done=21, wn=0, waiting=[])),
-    ("dash", Snapshot(cc=4, cx=2, ds=2, done=34, wn=0, waiting=[])),
-    ("waiting", Snapshot(cc=2, cx=1, ds=0, done=21, wn=2, waiting=[("claude", "A"), ("codex", "Q")])),
+    ("trot", Snapshot(cc=3, cx=0, ds=0, done=16, wn=0, waiting=[])),
+    ("run", Snapshot(cc=5, cx=0, ds=0, done=21, wn=0, waiting=[])),
+    ("dash", Snapshot(cc=8, cx=0, ds=0, done=34, wn=0, waiting=[])),
+    ("waiting", Snapshot(cc=1, cx=0, ds=0, done=21, wn=2, waiting=[("claude", "A"), ("claude", "Q")])),
 ]
+
+
+def agent_line(now):
+    """首页三格与 Claude Code 页面用的示例 A 帧：5 小时 86%（橙色）、每周 41%、后台运行 1。"""
+    return encode_agent("claude", ToolCounts(wn=0, bg=1, done=8), Window(86.0, now + 2 * 3600 + 15 * 60),
+                        Window(41.0, now + 3 * 86400 + 5 * 3600), now, "Max 5x")
 
 # 等“完成 +N”提示结束的时间：固件 AR_DONE_FLASH_MS 为 5 秒，多留 0.5 秒余量；
 # 仍短于 USB 链路 10 秒超时，等待期间设备不会判定未连接
@@ -61,6 +68,7 @@ def watch(link, seconds, minute, out, scale):
         now = time.time()
         if now >= next_frame:
             link.write_line(encode_state(snap, seq, minute=minute))
+            link.write_line(agent_line(now))
             seq += 1
             next_frame = now + 2.0
         width, height, rgb = screenshot.capture(link)
@@ -101,6 +109,7 @@ def main():
             # 完成数比设备上一帧大时，固件会用“完成 +N”替换状态行 5 秒，
             # 所以第一帧之后先等这段提示过去，再发完成数不变的第二帧并截屏。
             link.write_line(encode_state(snap, seq * 2))
+            link.write_line(agent_line(time.time()))
             time.sleep(DONE_FLASH_WAIT_S)
             link.write_line(encode_state(snap, seq * 2 + 1))
             time.sleep(1.0)

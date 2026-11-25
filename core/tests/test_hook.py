@@ -110,7 +110,7 @@ class HookProcessTest(unittest.TestCase):
         self.assertLess(elapsed, 0.2)
 
     def test_bad_json_exits_quietly(self):
-        proc, _ = self.run_hook("codex", b"{not json")
+        proc, _ = self.run_hook("claude", b"{not json")
         self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (0, b"", b""))
 
     def test_forwards_reduced_message_to_daemon_socket(self):
@@ -120,28 +120,13 @@ class HookProcessTest(unittest.TestCase):
         server.settimeout(2)
         try:
             payload = json.dumps({"session_id": "s1", "hook_event_name": "UserPromptSubmit", "prompt": "secret"}).encode()
-            proc, _ = self.run_hook("codex", payload)
+            proc, _ = self.run_hook("claude", payload)
             self.assertEqual(proc.returncode, 0)
             data = json.loads(server.recv(4096).decode())
         finally:
             server.close()
         self.assertEqual(set(data), {"tool", "event", "sid", "ts"})
-        self.assertEqual((data["tool"], data["event"], data["sid"]), ("codex", "UserPromptSubmit", "s1"))
-
-    def test_dsh_tool_is_accepted(self):
-        path = os.path.join(self.home, "run", "ar.sock")
-        server = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        server.bind(path)
-        server.settimeout(2)
-        try:
-            payload = json.dumps({"session_id": "d1", "hook_event_name": "PreToolUse",
-                                  "tool_name": "ask_user_question", "transcript_path": ""}).encode()
-            proc, _ = self.run_hook("dsh", payload)
-            self.assertEqual(proc.returncode, 0)
-            data = json.loads(server.recv(4096).decode())
-        finally:
-            server.close()
-        self.assertEqual((data["tool"], data["tool_name"]), ("dsh", "ask_user_question"))
+        self.assertEqual((data["tool"], data["event"], data["sid"]), ("claude", "UserPromptSubmit", "s1"))
 
     def test_unknown_tool_sends_nothing(self):
         path = os.path.join(self.home, "run", "ar.sock")
@@ -150,10 +135,12 @@ class HookProcessTest(unittest.TestCase):
         server.settimeout(0.3)
         try:
             payload = json.dumps({"session_id": "s1", "hook_event_name": "Stop"}).encode()
-            proc, _ = self.run_hook("vim", payload)
-            self.assertEqual(proc.returncode, 0)
-            with self.assertRaises(socket.timeout):
-                server.recv(4096)
+            # 只接 Claude Code：旧版装进 Codex、dsh 的 hook 若仍被调用，静默丢弃
+            for tool in ("vim", "codex", "dsh"):
+                proc, _ = self.run_hook(tool, payload)
+                self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (0, b"", b""), tool)
+                with self.assertRaises(socket.timeout):
+                    server.recv(4096)
         finally:
             server.close()
 
