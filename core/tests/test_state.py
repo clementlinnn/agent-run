@@ -209,13 +209,15 @@ class AggregatorTest(unittest.TestCase):
 
     # ---- 后台任务(Claude Code Stop 载荷的 background_tasks) ----------------
 
-    def test_stop_with_background_tasks_keeps_working_without_counting(self):
-        # 一轮结束时仍有后台任务在跑：会话只是暂停等唤醒，继续计入工作中，不计完成
+    def test_stop_with_background_tasks_is_background_not_working(self):
+        # 一轮结束时仍有后台任务：会话只是暂停等唤醒，算后台运行，不计入工作中，也不计完成。
+        # 后台任务可能是长期挂着的监看（如 artifact 留言监看），并没有在干活
         a = self.agg
         a.handle(ev("claude", "UserPromptSubmit", "s1", 1000.0))
         a.handle(ev("claude", "Stop", "s1", 1001.0, bg=1))
         snap = a.snapshot()
-        self.assertEqual((snap.cc, snap.done), (1, 0))
+        self.assertEqual((snap.cc, snap.done), (0, 0))
+        self.assertEqual(a.tool_counts()["claude"].bg, 1)
 
     def test_background_session_counts_done_once_when_finally_stopped(self):
         # 后台任务结束后会话被唤醒，可能再起后台任务；最后一次不带后台任务的 Stop 才计完成
@@ -236,18 +238,19 @@ class AggregatorTest(unittest.TestCase):
         a.handle(ev("claude", "Stop", "s1", 1001.0, bg=1))
         self.clock.t = 1001.0 + 50 * 60
         a.tick()
-        self.assertEqual(a.snapshot().cc, 1)
+        self.assertEqual(a.tool_counts()["claude"].bg, 1)
 
     def test_background_session_times_out_after_2_hours(self):
         a = self.agg
         a.handle(ev("claude", "UserPromptSubmit", "s1", 1000.0))
         a.handle(ev("claude", "Stop", "s1", 1001.0, bg=1))
         self.clock.t = 1001.0 + 2 * 3600 - 1
-        self.assertFalse(a.tick())
+        a.tick()
+        self.assertEqual(a.tool_counts()["claude"].bg, 1)
         self.clock.t = 1001.0 + 2 * 3600 + 1
-        self.assertTrue(a.tick())
-        snap = a.snapshot()
-        self.assertEqual((snap.cc, snap.done), (0, 0))
+        a.tick()
+        self.assertEqual(a.tool_counts()["claude"].bg, 0)
+        self.assertEqual(a.snapshot().done, 0)
 
     def test_invalid_background_count_is_ignored(self):
         # 非整数（含布尔值）的 bg 视同没有后台任务，按普通 Stop 处理
