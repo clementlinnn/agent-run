@@ -3,12 +3,12 @@
 原则：
 - 修改 Agent 配置前先备份；
 - 只追加自己的条目（按 hook 脚本路径识别），不改动其他 hook；
-- 条目追加在各事件列表末尾，Codex 按位置记录的信任状态不受影响。
+- 条目追加在各事件列表末尾。
+- 只接 Claude Code：旧版装进 Codex 的条目由 install_hooks、uninstall_hooks 清掉。
 """
 import json
 import os
 import plistlib
-import re
 import shutil
 import subprocess
 import tempfile
@@ -30,32 +30,6 @@ CLAUDE_EVENTS = [
     "StopFailure",
     "SessionEnd",
 ]
-
-# Codex 需要监听的事件
-CODEX_EVENTS = [
-    "SessionStart",
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PostToolUse",
-    "PermissionRequest",
-    "Stop",
-    "Interrupt",
-    "SessionEnd",
-]
-
-
-# dsh 的 Claude Code 兼容 hook 插件（@deepseek-ai/dsh-hooks-claude-code）支持的事件
-DSH_EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]
-
-
-def dsh_hooks_config(python, hook_path):
-    """生成给 dsh hook 插件读取的 hooks.json（Claude Code 格式），命令以 dsh 身份上报。
-
-    插件的超时字段单位与 Claude Code 相同（秒）；不声明 async，插件未必支持。
-    """
-    entry = {"type": "command", "command": "%s %s dsh" % (python, hook_path), "timeout": 2}
-    return {"hooks": {event: [{"hooks": [dict(entry)]}] for event in DSH_EVENTS}}
-
 
 def _load(path):
     """读 JSON 配置；文件不存在时返回空对象。"""
@@ -135,52 +109,28 @@ def _remove_hooks(path, hook_path):
     _save(path, data)
 
 
-def _snake_case(event):
-    """PreToolUse -> pre_tool_use，与 Codex [hooks.state] 键名中的事件写法一致。"""
-    return "".join("_" + c.lower() if c.isupper() else c for c in event).lstrip("_")
-
-
-def codex_untrusted_events(hooks_path, config_path, hook_path):
-    """返回本工具在 Codex 中尚无信任记录的 hook 事件名。
-
-    Codex 只执行审查并信任过的 hook，信任记录写在 config.toml 的
-    [hooks.state."<hooks.json 路径>:<事件>:<分组下标>:<条目下标>"] 下。
-    这里只检查记录是否存在；命令改动后哈希失效的情况无法从这里判断。
-    """
+def has_our_hooks(path, hook_path):
+    """配置文件里是否还有指向本 hook 脚本的条目；文件不存在或内容损坏时返回 False。"""
     try:
-        hooks = _load(hooks_path).get("hooks", {})
+        data = _load(path)
     except (OSError, ValueError):
-        return []
-    try:
-        with open(config_path, encoding="utf-8") as f:
-            config = f.read()
-    except OSError:
-        config = ""
-    trusted = set(re.findall(r'^\[hooks\.state\."([^"]+)"\]', config, re.M))
-    prefix = os.path.abspath(os.path.expanduser(hooks_path))
-    untrusted = []
-    for event, groups in hooks.items():
-        for gi, group in enumerate(groups):
-            for hi, hook in enumerate(group.get("hooks", [])):
-                if hook_path not in str(hook.get("command", "")):
-                    continue
-                key = "%s:%s:%d:%d" % (prefix, _snake_case(event), gi, hi)
-                if key not in trusted and event not in untrusted:
-                    untrusted.append(event)
-    return untrusted
+        return False
+    hooks = data.get("hooks") if isinstance(data, dict) else None
+    if not isinstance(hooks, dict):
+        return False
+    return any(isinstance(groups, list) and _has_our_hook(groups, hook_path) for groups in hooks.values())
 
 
 def install_hooks(claude_path, codex_path, python, hook_path, backup_dir):
-    """为 Claude Code 与 Codex 安装 hook；返回备份目录。重复执行不会重复添加。"""
+    """为 Claude Code 安装 hook，并清掉旧版装进 Codex 的条目；返回备份目录。重复执行不会重复添加。"""
     backup = _backup([claude_path, codex_path], backup_dir)
     _add_hooks(claude_path, "claude", CLAUDE_EVENTS, python, hook_path, {})
-    # Codex 的 timeout 单位是秒；SessionEnd 始终同步执行，默认只有 1 秒
-    _add_hooks(codex_path, "codex", CODEX_EVENTS, python, hook_path, {"timeout": 2})
+    _remove_hooks(codex_path, hook_path)
     return backup
 
 
 def uninstall_hooks(claude_path, codex_path, hook_path, backup_dir):
-    """删除两份配置中本 hook 的条目；返回备份目录。"""
+    """删除 Claude Code 与（旧版留下的）Codex 配置中本 hook 的条目；返回备份目录。"""
     backup = _backup([claude_path, codex_path], backup_dir)
     _remove_hooks(claude_path, hook_path)
     _remove_hooks(codex_path, hook_path)

@@ -7,8 +7,7 @@ import unittest
 
 from agent_run.install import (
     CLAUDE_EVENTS,
-    CODEX_EVENTS,
-    codex_untrusted_events,
+    has_our_hooks,
     install_hooks,
     launchd_plist,
     uninstall_hooks,
@@ -38,7 +37,12 @@ class InstallHooksTest(unittest.TestCase):
             "model": "opus",
             "hooks": {"Stop": [{"hooks": [self.other]}]},
         })
-        write_json(self.codex, {"hooks": {"Stop": [{"hooks": [self.other]}]}})
+        # 旧版 agent-run 给 Codex 装过的条目，与使用者自己的条目放在一起
+        self.legacy = {"type": "command", "command": "/usr/bin/python3 %s codex" % HOOK, "async": True, "timeout": 2}
+        write_json(self.codex, {"hooks": {
+            "Stop": [{"hooks": [self.other]}, {"hooks": [dict(self.legacy)]}],
+            "SessionStart": [{"hooks": [dict(self.legacy)]}],
+        }})
 
     def install(self):
         return install_hooks(self.claude, self.codex, "/usr/bin/python3", HOOK, self.backup)
@@ -51,10 +55,12 @@ class InstallHooksTest(unittest.TestCase):
         self.assertIn({"hooks": [self.other]}, claude["hooks"]["Stop"])
         ours = [h for g in claude["hooks"]["Stop"] for h in g["hooks"] if HOOK in h["command"]]
         self.assertEqual(ours, [{"type": "command", "command": "/usr/bin/python3 %s claude" % HOOK, "async": True}])
-        codex = read_json(self.codex)
-        self.assertEqual(set(codex["hooks"]), set(CODEX_EVENTS))
-        ours = [h for g in codex["hooks"]["Stop"] for h in g["hooks"] if HOOK in h["command"]]
-        self.assertEqual(ours, [{"type": "command", "command": "/usr/bin/python3 %s codex" % HOOK, "async": True, "timeout": 2}])
+
+    def test_install_removes_legacy_codex_entries_and_keeps_others(self):
+        # 只接 Claude Code：install-hooks 顺手清掉旧版装进 Codex 的条目，使用者自己的条目不动
+        self.install()
+        self.assertEqual(read_json(self.codex), {"hooks": {"Stop": [{"hooks": [self.other]}]}})
+        self.assertFalse(has_our_hooks(self.codex, HOOK))
 
     def test_install_is_idempotent(self):
         self.install()
@@ -74,56 +80,39 @@ class InstallHooksTest(unittest.TestCase):
         os.remove(self.codex)
         self.install()
         self.assertEqual(set(read_json(self.claude)["hooks"]), set(CLAUDE_EVENTS))
-        self.assertEqual(set(read_json(self.codex)["hooks"]), set(CODEX_EVENTS))
+        self.assertFalse(os.path.exists(self.codex))   # 不再为 Codex 新建配置
 
     def test_uninstall_removes_only_our_entries(self):
         before_claude = read_json(self.claude)
-        before_codex = read_json(self.codex)
         self.install()
         uninstall_hooks(self.claude, self.codex, HOOK, self.backup)
         self.assertEqual(read_json(self.claude), before_claude)
-        self.assertEqual(read_json(self.codex), before_codex)
+        self.assertEqual(read_json(self.codex), {"hooks": {"Stop": [{"hooks": [self.other]}]}})
+
+    def test_uninstall_also_clears_legacy_codex_entries(self):
+        # 没执行过新版 install-hooks 的旧安装，uninstall-hooks 也能把 Codex 里的条目清干净
+        uninstall_hooks(self.claude, self.codex, HOOK, self.backup)
+        self.assertEqual(read_json(self.codex), {"hooks": {"Stop": [{"hooks": [self.other]}]}})
 
 
-class CodexTrustTest(unittest.TestCase):
-    """Codex 只执行在 config.toml [hooks.state] 里有信任记录的 hook。"""
-
+class HasOurHooksTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
-        self.hooks = os.path.join(self.dir, "hooks.json")
-        self.config = os.path.join(self.dir, "config.toml")
-        other = {"type": "command", "command": "/usr/local/bin/other-tool"}
-        write_json(self.hooks, {"hooks": {"Stop": [{"hooks": [other]}], "PreToolUse": [{"hooks": [other]}]}})
-        install_hooks(os.path.join(self.dir, "settings.json"), self.hooks, "/usr/bin/python3", HOOK,
-                      os.path.join(self.dir, "backup"))
+        self.path = os.path.join(self.dir, "hooks.json")
 
-    def write_config(self, keys):
-        lines = ["[features]", "hooks = true", "", "[hooks.state]"]
-        for key in keys:
-            lines += ['[hooks.state."%s"]' % key, 'trusted_hash = "sha256:abc"', ""]
-        with open(self.config, "w") as f:
-            f.write("\n".join(lines))
+    def test_detects_entries_pointing_at_our_hook(self):
+        write_json(self.path, {"hooks": {"Stop": [{"hooks": [{"command": "/usr/bin/python3 %s codex" % HOOK}]}]}})
+        self.assertTrue(has_our_hooks(self.path, HOOK))
 
-    def test_untrusted_entries_are_reported(self):
-        # 只有原有工具的条目被信任：agent-run 追加在下标 1 的条目都未信任
-        self.write_config(["%s:stop:0:0" % self.hooks, "%s:pre_tool_use:0:0" % self.hooks])
-        self.assertEqual(sorted(codex_untrusted_events(self.hooks, self.config, HOOK)), sorted(CODEX_EVENTS))
-
-    def test_trusted_entries_use_group_and_hook_index(self):
-        keys = []
-        for event in CODEX_EVENTS:
-            snake = "".join("_" + c.lower() if c.isupper() else c for c in event).lstrip("_")
-            index = 1 if event in ("Stop", "PreToolUse") else 0
-            keys.append("%s:%s:%d:0" % (self.hooks, snake, index))
-        self.write_config(keys[:-1])
-        self.assertEqual(codex_untrusted_events(self.hooks, self.config, HOOK), [CODEX_EVENTS[-1]])
-        self.write_config(keys)
-        self.assertEqual(codex_untrusted_events(self.hooks, self.config, HOOK), [])
-
-    def test_missing_files(self):
-        self.assertEqual(codex_untrusted_events(os.path.join(self.dir, "none.json"), self.config, HOOK), [])
-        self.assertEqual(sorted(codex_untrusted_events(self.hooks, os.path.join(self.dir, "none.toml"), HOOK)),
-                         sorted(CODEX_EVENTS))
+    def test_other_entries_missing_or_broken_files_are_false(self):
+        write_json(self.path, {"hooks": {"Stop": [{"hooks": [{"command": "/usr/local/bin/other"}]}]}})
+        self.assertFalse(has_our_hooks(self.path, HOOK))
+        self.assertFalse(has_our_hooks(os.path.join(self.dir, "none.json"), HOOK))
+        with open(self.path, "w") as f:
+            f.write("{not json")
+        self.assertFalse(has_our_hooks(self.path, HOOK))
+        write_json(self.path, ["not", "a", "dict"])
+        self.assertFalse(has_our_hooks(self.path, HOOK))
 
 
 class DeployTest(unittest.TestCase):
@@ -137,17 +126,6 @@ class DeployTest(unittest.TestCase):
         hook, script = deploy(deployed_host, home)
         self.assertTrue(os.path.isfile(os.path.join(home, "lib", "agent_run", "state.py")))
         self.assertTrue(os.path.isfile(hook) and os.path.isfile(script))
-
-
-class DshHooksTest(unittest.TestCase):
-    def test_dsh_hooks_config_uses_claude_code_format(self):
-        from agent_run.install import DSH_EVENTS, dsh_hooks_config
-        config = dsh_hooks_config("/usr/bin/python3", HOOK)
-        self.assertEqual(set(config["hooks"]), set(DSH_EVENTS))
-        entry = config["hooks"]["PreToolUse"][0]["hooks"][0]
-        self.assertEqual(entry["command"], "/usr/bin/python3 %s dsh" % HOOK)
-        self.assertEqual(entry["type"], "command")
-        self.assertEqual(entry["timeout"], 2)
 
 
 class BridgePlistTest(unittest.TestCase):
